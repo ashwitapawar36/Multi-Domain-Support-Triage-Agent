@@ -1,0 +1,34 @@
+Home | Claude Help Center
+Skip to main content
+Claude
+86 articles
+Pro and Max plans
+16 articles
+Team and Enterprise plans
+53 articles
+Claude API and Console
+40 articles
+Identity management (SSO, JIT, SCIM)
+5 articles
+Claude Code
+19 articles
+Claude Desktop
+9 articles
+Claude Mobile apps
+19 articles
+Connectors
+19 articles
+Claude in Chrome
+5 articles
+Claude for Education
+4 articles
+Claude for Nonprofits
+6 articles
+Privacy and legal
+20 articles
+Safeguards
+15 articles
+Amazon Bedrock
+6 articles
+Claude for Government
+9 articles

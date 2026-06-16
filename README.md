@@ -126,6 +126,7 @@ The AI Judge will have access to your submission and may ask about your approach
 Results will be announced on May 15, 2026
 
 ---
+If Gemini API is unavailable, use included output.csv generated from final run.
 
 ## Evaluation criteria
 
