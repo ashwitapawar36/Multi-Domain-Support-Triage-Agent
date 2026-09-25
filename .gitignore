@@ -35,3 +35,6 @@ hack.env
 log.txt
 support_tickets/output.csv
 log.txt
+
+*.log
+support_tickets/output_*.csv

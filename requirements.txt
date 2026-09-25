@@ -1,3 +1,6 @@
 google-genai
 python-dotenv
 tqdm
+rank-bm25
+beautifulsoup4
+requests
