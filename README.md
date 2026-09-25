@@ -73,6 +73,7 @@ Multi-Domain-Support-Triage-Agent/
 ├── README.md
 └── triage_full.log
 
+```
 ## Setup
 
 Follow these steps to set up and run the project locally.
