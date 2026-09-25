@@ -1,4 +1,7 @@
+import argparse
 import csv
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -6,9 +9,6 @@ ROOT = Path(__file__).resolve().parents[1]
 INPUT_FILE = ROOT / "support_tickets" / "support_tickets.csv"
 OUTPUT_FILE = ROOT / "support_tickets" / "output_full.csv"
 LOG_FILE = ROOT / "triage_full.log"
-
-# Keep True until we have checked CSV reading and corpus loading.
-CHECK_INPUT_ONLY = False
 
 RESULT_FIELDS = [
     "status",
@@ -21,182 +21,253 @@ RESULT_FIELDS = [
 
 def read_tickets():
     with INPUT_FILE.open(
-        "r", newline="", encoding="utf-8-sig"
+        newline="", encoding="utf-8-sig"
     ) as file:
         reader = csv.DictReader(file)
 
-        if reader.fieldnames is None:
-            raise ValueError("The CSV is empty or has no header.")
+        if not reader.fieldnames:
+            raise ValueError("CSV has no header.")
 
-        columns = [
-            name.strip().lower() for name in reader.fieldnames
-        ]
+        columns = [name.strip().lower() for name in reader.fieldnames]
 
         if len(columns) != len(set(columns)):
-            raise ValueError("The CSV has duplicate column names.")
+            raise ValueError("Duplicate CSV column names.")
 
-        required = {"issue", "subject", "company"}
-        missing = required - set(columns)
-
+        missing = {"issue", "subject", "company"} - set(columns)
         if missing:
-            raise ValueError(
-                f"Missing CSV columns: {sorted(missing)}"
-            )
+            raise ValueError(f"Missing columns: {sorted(missing)}")
+
+        reserved = set(RESULT_FIELDS) | {"processing_state", "error"}
+        if reserved.intersection(columns):
+            raise ValueError("Input CSV contains reserved output columns.")
 
         reader.fieldnames = columns
         tickets = []
 
-        for row_number, row in enumerate(reader, start=2):
+        for number, row in enumerate(reader, start=2):
             if None in row:
-                raise ValueError(
-                    f"CSV row {row_number} has extra values. "
-                    "Check commas and quotation marks."
-                )
+                raise ValueError(f"CSV row {number} has extra values.")
 
             ticket = {
                 name: (value or "").strip()
                 for name, value in row.items()
             }
 
-            # Skip completely empty rows.
             if not any(ticket.values()):
                 continue
 
             if not ticket["issue"]:
-                raise ValueError(
-                    f"CSV row {row_number} has an empty issue."
-                )
+                raise ValueError(f"CSV row {number} has no issue.")
 
             tickets.append(ticket)
 
     if not tickets:
-        raise ValueError("The CSV contains no tickets.")
+        raise ValueError("CSV contains no tickets.")
 
     return columns, tickets
 
 
+def load_progress(columns, tickets):
+    rows = []
+
+    for ticket in tickets:
+        row = dict(ticket)
+        row.update({field: "" for field in RESULT_FIELDS})
+        row.update(processing_state="pending", error="")
+        rows.append(row)
+
+    if not OUTPUT_FILE.exists():
+        return rows
+
+    with OUTPUT_FILE.open(
+        newline="", encoding="utf-8-sig"
+    ) as file:
+        reader = csv.DictReader(file)
+        required = set(columns + RESULT_FIELDS + [
+            "processing_state", "error"
+        ])
+
+        if not required.issubset(reader.fieldnames or []):
+            raise ValueError("Existing output has incompatible columns.")
+
+        saved = list(reader)
+
+    if len(saved) > len(tickets):
+        raise ValueError("Existing output has more rows than the input.")
+
+    for index, old in enumerate(saved):
+        # Never reuse results against changed or reordered tickets.
+        if any(
+            old.get(name, "") != tickets[index][name]
+            for name in columns
+        ):
+            raise ValueError(
+                f"Input differs from saved output at ticket {index + 1}. "
+                "Use a different output filename for changed input."
+            )
+
+        state = old.get("processing_state")
+        if state not in {"pending", "completed", "failed"}:
+            raise ValueError(f"Invalid saved state at ticket {index + 1}.")
+
+        if state == "completed":
+            if any(not old.get(field, "").strip() for field in RESULT_FIELDS):
+                raise ValueError(
+                    f"Incomplete saved result at ticket {index + 1}."
+                )
+
+        rows[index].update({
+            field: old.get(field, "")
+            for field in RESULT_FIELDS + ["processing_state", "error"]
+        })
+
+    return rows
+
+
+def save_progress(rows, columns):
+    fields = columns + RESULT_FIELDS + ["processing_state", "error"]
+    temporary = OUTPUT_FILE.with_suffix(".csv.tmp")
+
+    with temporary.open(
+        "w", newline="", encoding="utf-8"
+    ) as file:
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+        file.flush()
+        os.fsync(file.fileno())
+
+    # Replace only after the complete checkpoint has been written.
+    os.replace(temporary, OUTPUT_FILE)
+
+
 def main():
-    print("=== Step 1: Reading support tickets ===")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check-input", action="store_true")
+    parser.add_argument(
+        "--tickets",
+        help="Reprocess specific ticket numbers, e.g. 4,12,20",
+    )
+    parser.add_argument("--retry-failed", action="store_true")
+    args = parser.parse_args()
+
+    if args.tickets is not None and args.retry_failed:
+        parser.error("Use either --tickets or --retry-failed.")
+
     columns, tickets = read_tickets()
+    print(f"Loaded {len(tickets)} tickets.")
 
-    print("Columns:", columns)
-    print("Ticket count:", len(tickets))
-    print("First ticket:", tickets[0])
-
-    if CHECK_INPUT_ONLY:
-        print(
-            "\nCSV check passed. "
-            "No Gemini requests were made and no results were overwritten."
-        )
+    if args.check_input:
+        print("Columns:", columns)
+        print("First ticket:", tickets[0])
         return
 
-    # Import only after the input check.
+    rows = load_progress(columns, tickets)
+
+    if args.tickets is not None:
+        try:
+            numbers = sorted({
+                int(value.strip()) for value in args.tickets.split(",")
+            })
+        except ValueError:
+            parser.error("--tickets must contain comma-separated integers.")
+
+        if any(number < 1 or number > len(tickets) for number in numbers):
+            parser.error(f"Ticket numbers must be 1–{len(tickets)}.")
+
+        selected = [number - 1 for number in numbers]
+
+    elif args.retry_failed:
+        selected = [
+            index for index, row in enumerate(rows)
+            if row["processing_state"] == "failed"
+        ]
+
+    else:
+        # Default: resume unfinished work.
+        selected = [
+            index for index, row in enumerate(rows)
+            if row["processing_state"] != "completed"
+        ]
+
+    if not selected:
+        print("Nothing to process. No Gemini requests made.")
+        return
+
     from scraper import load_corpus
     from retriever import retrieve
     from agent import triage_ticket
 
-    print("\n=== Step 2: Loading support corpus ===")
     corpus = load_corpus()
-
     if not corpus:
-        raise RuntimeError(
-            "No support corpus loaded. Fix corpus loading first."
+        raise RuntimeError("No documentation loaded.")
+
+    # Preserve the previous output before any reprocessing.
+    if OUTPUT_FILE.exists():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = OUTPUT_FILE.with_name(
+            f"{OUTPUT_FILE.stem}.backup-{stamp}.csv"
+        )
+        backup.write_bytes(OUTPUT_FILE.read_bytes())
+        print(f"Previous results backed up to: {backup.name}")
+
+    print("Selected tickets:", [index + 1 for index in selected])
+
+    with LOG_FILE.open("a", encoding="utf-8") as log:
+        log.write(
+            f"\n=== RUN {datetime.now(timezone.utc).isoformat()} ===\n"
         )
 
-    print("Loaded documentation for:", list(corpus.keys()))
-
-    output_columns = [
-        name for name in columns
-        if name not in RESULT_FIELDS
-        and name not in {"processing_state", "error"}
-    ]
-    output_columns += RESULT_FIELDS + ["processing_state", "error"]
-
-    print("\n=== Step 3: Triaging tickets ===")
-    completed = 0
-    failed = 0
-
-    with (
-        LOG_FILE.open("w", encoding="utf-8") as log,
-        OUTPUT_FILE.open(
-            "w", newline="", encoding="utf-8"
-        ) as output_file,
-    ):
-        writer = csv.DictWriter(
-            output_file,
-            fieldnames=output_columns,
-            extrasaction="ignore",
-        )
-        writer.writeheader()
-        log.write("=== SUPPORT TRIAGE AGENT LOG ===\n")
-
-        for number, ticket in enumerate(tickets, start=1):
-            issue = ticket["issue"]
-            subject = ticket["subject"]
+        for index in selected:
+            ticket = tickets[index]
             company = ticket["company"]
 
             if company.lower() in {"", "none", "nan"}:
                 company = None
 
-            print(f"Processing ticket {number}/{len(tickets)}")
+            print(f"\nProcessing ticket {index + 1}/{len(tickets)}")
+            log.write(f"\nTicket #{index + 1}\n")
 
-            log.write(
-                f"\n{'=' * 60}\n"
-                f"Ticket #{number}\n"
-                f"Company: {company}\n"
-                f"Subject: {subject}\n"
-                f"Issue: {issue}\n"
-            )
-
-            output_row = dict(ticket)
-            output_row.update({
-                field: "" for field in RESULT_FIELDS
-            })
-            output_row["processing_state"] = "failed"
-            output_row["error"] = ""
+            row = dict(ticket)
+            row.update({field: "" for field in RESULT_FIELDS})
+            row.update(processing_state="failed", error="")
 
             try:
                 docs = retrieve(
-                    f"{subject} {issue}",
+                    ticket["subject"] + " " + ticket["issue"],
                     company,
                     corpus,
                 )
-
                 result = triage_ticket(
-                    issue,
-                    subject,
+                    ticket["issue"],
+                    ticket["subject"],
                     company,
                     docs,
                     log_file=log,
                 )
 
                 for field in RESULT_FIELDS:
-                    output_row[field] = result[field]
+                    row[field] = result[field]
 
-                output_row["processing_state"] = "completed"
-                completed += 1
-                print(f"  Decision: {result['status']}")
+                row["processing_state"] = "completed"
+                print("Decision:", result["status"])
 
             except Exception as error:
-                error_message = (
-                    f"{type(error).__name__}: {error}"
-                )
-                output_row["error"] = error_message
-                failed += 1
+                row["error"] = f"{type(error).__name__}: {error}"
+                log.write(f"\n[ERROR] {row['error']}\n")
+                print("Failed:", row["error"])
 
-                log.write(f"\n[ERROR]\n{error_message}\n")
-                print(f"  Failed: {error_message}")
-
-            # Save each ticket immediately, including failures.
-            writer.writerow(output_row)
-            output_file.flush()
+            rows[index] = row
+            save_progress(rows, columns)
             log.flush()
 
-    print("\n=== Processing finished ===")
-    print(f"Completed: {completed}")
-    print(f"Failed: {failed}")
-    print(f"Results: {OUTPUT_FILE}")
-    print(f"Log: {LOG_FILE}")
+    print("\nSaved results:")
+    for state in ["completed", "failed", "pending"]:
+        count = sum(row["processing_state"] == state for row in rows)
+        print(f"{state}: {count}")
+
+    print("CSV:", OUTPUT_FILE)
+    print("Log:", LOG_FILE)
 
 
 if __name__ == "__main__":

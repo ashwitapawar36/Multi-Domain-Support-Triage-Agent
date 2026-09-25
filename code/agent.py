@@ -133,6 +133,14 @@ def enforce_escalation_policy(issue, subject, result):
         r"(?:stolen|compromised|breached)\b",
     ]
 
+    retention_patterns = [
+        r"\bhow long\b.*\b(?:data|information|prompts?|conversations?|"
+        r"messages?|content)\b.*\b(?:kept|stored|retained|used)\b",
+
+        r"\b(?:data|information|prompts?|conversations?|messages?|content)"
+        r"\b.*\b(?:retention|retained|stored|kept)\b",
+    ]
+
     rules = [
         (
             assessment_patterns,
@@ -155,6 +163,14 @@ def enforce_escalation_policy(issue, subject, result):
             "A reported vulnerability or compromise requires human review.",
             "Your security report requires human review. This automated "
             "agent cannot investigate or resolve the reported security issue.",
+        ),
+                (
+            retention_patterns,
+            "Privacy",
+            "The requested data-retention period requires human review "
+            "because the available documentation does not establish it.",
+            "The available documentation does not specify the exact "
+            "data-retention period. Human review is required.",
         ),
     ]
 
@@ -189,7 +205,7 @@ def enforce_escalation_policy(issue, subject, result):
             "Human review is required before selecting the appropriate "
             "LTI setup instructions."
         )
-        
+
     if checked["status"] == "escalated":
         # Use controlled wording so the model cannot promise a handoff.
         checked["response"] = override_response or (
