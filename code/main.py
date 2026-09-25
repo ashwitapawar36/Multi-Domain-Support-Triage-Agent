@@ -4,11 +4,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 INPUT_FILE = ROOT / "support_tickets" / "support_tickets.csv"
-OUTPUT_FILE = ROOT / "support_tickets" / "output.csv"
-LOG_FILE = ROOT / "triage_run.log"
+OUTPUT_FILE = ROOT / "support_tickets" / "output_full.csv"
+LOG_FILE = ROOT / "triage_full.log"
 
 # Keep True until we have checked CSV reading and corpus loading.
-CHECK_INPUT_ONLY = True
+CHECK_INPUT_ONLY = False
 
 RESULT_FIELDS = [
     "status",
